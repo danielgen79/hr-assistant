@@ -88,3 +88,43 @@ Feature: Production readiness of the HR Assistant
     Then the response status is 200
     And the page has a password field with the test id "api-key"
     And the page uses sessionStorage and never localStorage
+
+  Scenario: Each client is named in the log with its own name
+    When I ask "Who is EMP-0004?" with the other key
+    Then the response status is 200
+    And the request event in the log has the client "other-tester"
+    And the log does not contain the test key
+
+  Scenario: Callers without a valid key do not use up the quota of a client
+    Given the rate limit is 1 per minute
+    And the clock is fake
+    When I ask "Who is EMP-0004?" without a key
+    Then the response status is 401
+    When I ask "Who is EMP-0004?" with the key "wrong-key-0000000000"
+    Then the response status is 401
+    When I ask "Who is EMP-0004?" with the test key
+    Then the response status is 200
+
+  Scenario Outline: Production refuses to start with an unsafe setting
+    Given the production settings
+    And the environment variable <name> is "<value>"
+    When I start the app
+    Then startup is refused naming the rule "<rule>"
+
+    Examples:
+      | name           | value               | rule                |
+      | MODEL_PROVIDER | fake                | model_provider_fake |
+      | API_KEYS       | hr:short-key-12345  | api_key_too_short   |
+
+  Scenario: Production starts with a key of exactly 16 characters
+    Given the production settings
+    And the environment variable API_KEYS is "hr:short-key-123456"
+    When I start the app
+    Then the app starts
+
+  Scenario: Production refuses traces that would show the questions
+    Given the production settings
+    And the environment variable LANGSMITH_TRACING is "true"
+    And the environment variable HIDE_INPUTS is "false"
+    When I start the app
+    Then startup is refused naming the rule "traces_not_hidden"

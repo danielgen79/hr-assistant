@@ -80,3 +80,32 @@ def test_smoke_fails_without_the_environment_key_and_calls_nothing(
     assert smoke.main([URL], {}) != 0
     assert "SMOKE_API_KEY" in capsys.readouterr().out
     assert len(fake.calls) == 0
+
+
+def test_smoke_ignores_a_key_given_as_an_argument(smoke, monkeypatch, capsys):
+    fake = FakeHttpx()
+    monkeypatch.setattr(smoke, "httpx", fake)
+    assert smoke.main([URL, KEY], {}) != 0
+    assert KEY not in capsys.readouterr().out
+    assert len(fake.calls) == 0
+
+
+def test_smoke_fails_when_ask_without_a_key_is_not_rejected(
+    smoke, monkeypatch, capsys
+):
+    monkeypatch.setattr(smoke, "httpx", FakeHttpx(without_key=200))
+    assert smoke.main([URL], {"SMOKE_API_KEY": KEY}) != 0
+    output = capsys.readouterr().out
+    assert output.count("[OK]") == 2
+    assert output.count("[FAIL]") == 1
+
+
+def test_smoke_fails_when_health_is_down_and_still_runs_the_other_checks(
+    smoke, monkeypatch, capsys
+):
+    monkeypatch.setattr(smoke, "httpx", FakeHttpx(health=500))
+    monkeypatch.setattr(smoke.time, "sleep", lambda seconds: None)
+    assert smoke.main([URL], {"SMOKE_API_KEY": KEY}) != 0
+    output = capsys.readouterr().out
+    assert output.count("[FAIL]") == 1
+    assert output.count("[OK]") == 2
