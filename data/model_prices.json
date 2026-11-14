@@ -1,0 +1,8 @@
+{
+  "unit": "USD por millón de tokens",
+  "source": "Página de precios de Cloudflare Workers AI. MODEL_SMALL usa el precio publicado de la variante fp8-fast, porque Cloudflare no lista ese nombre exacto.",
+  "models": {
+    "@cf/meta/llama-3.1-8b-instruct-fast": {"input": 0.045, "output": 0.384},
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast": {"input": 0.293, "output": 2.253}
+  }
+}

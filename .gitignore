@@ -1,0 +1,15 @@
+# Secretos: nunca al repositorio
+.env
+
+# Entornos y cachés
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.pylint.d/
+.mypy_cache/
+.ruff_cache/
+
+# Cobertura
+.coverage
+htmlcov/

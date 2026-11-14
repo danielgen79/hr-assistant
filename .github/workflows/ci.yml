@@ -1,0 +1,78 @@
+# Pipeline del HR Assistant: style -> unit -> e2e -> docker.
+# Cada etapa depende de la anterior (needs): si una falla, las siguientes no corren.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  style:
+    name: style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Pylint con 88 columnas
+        run: >
+          python -m pylint app tests --max-line-length=88 --fail-under=10
+          --disable=missing-function-docstring,redefined-outer-name,too-few-public-methods
+
+  unit:
+    name: unit
+    needs: style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Pruebas y BDD con cobertura minima de 80 %
+        run: python -m pytest tests --cov=app --cov-report=term-missing --cov-fail-under=80
+
+  e2e:
+    name: e2e
+    needs: unit
+    runs-on: ubuntu-latest
+    env:
+      # Clave de ejemplo solo para esta corrida; no es un secreto real
+      E2E_API_KEY: ci-example-key-0123456789
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Instalar Chromium para Playwright
+        run: python -m playwright install --with-deps chromium
+      - name: Arrancar el producto con el modelo simulado
+        env:
+          MODEL_PROVIDER: fake
+          API_KEYS: ci:ci-example-key-0123456789
+          RATE_LIMIT_PER_MINUTE: "1000"
+        run: |
+          nohup python -m uvicorn app.main:app --port 8000 > server.log 2>&1 &
+          for _ in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8000/health > /dev/null; then exit 0; fi
+            sleep 0.5
+          done
+          cat server.log
+          exit 1
+      - name: Pruebas de punta a punta
+        run: python -m pytest e2e -q --base-url http://127.0.0.1:8000
+
+  docker:
+    name: docker
+    needs: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Construir la imagen
+        run: docker build -t hr-assistant .

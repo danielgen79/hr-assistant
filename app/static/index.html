@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>HR Assistant</title>
+  <style>
+    body { font-family: sans-serif; max-width: 720px; margin: 2rem auto; }
+    #conversation { border: 1px solid #ccc; min-height: 200px; padding: 1rem; }
+    .message { margin: 0.5rem 0; white-space: pre-wrap; }
+    .user { font-weight: bold; }
+    .tools { color: #666; font-size: 0.85em; }
+    .error { color: #b00020; }
+    input { width: 75%; padding: 0.5rem; }
+    button { padding: 0.5rem 1rem; }
+  </style>
+</head>
+<body>
+  <h1>HR Assistant</h1>
+  <div id="conversation" data-testid="answer"></div>
+  <p>
+    <input type="password" data-testid="api-key" placeholder="Clave de acceso"
+           autocomplete="off">
+  </p>
+  <p>
+    <input type="text" data-testid="question" placeholder="Escribe tu pregunta">
+    <button type="button" data-testid="send">Enviar</button>
+  </p>
+  <script>
+    var STORAGE_KEY = "hr-assistant-history";
+    var KEY_STORAGE = "hr-assistant-api-key";
+    var conversation = document.querySelector('[data-testid="answer"]');
+    var input = document.querySelector('[data-testid="question"]');
+    var keyInput = document.querySelector('[data-testid="api-key"]');
+    var button = document.querySelector('[data-testid="send"]');
+    var chatHistory = [];
+
+    try {
+      var saved = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || "[]");
+      chatHistory = Array.isArray(saved) ? saved : [];
+    } catch (error) {
+      chatHistory = [];
+    }
+    keyInput.value = sessionStorage.getItem(KEY_STORAGE) || "";
+    keyInput.addEventListener("input", function () {
+      sessionStorage.setItem(KEY_STORAGE, keyInput.value);
+    });
+
+    function addMessage(cssClass, text) {
+      var line = document.createElement("div");
+      line.className = "message " + cssClass;
+      line.textContent = text;
+      conversation.appendChild(line);
+    }
+
+    function remember(role, content) {
+      chatHistory.push({ role: role, content: content });
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(chatHistory));
+    }
+
+    chatHistory.forEach(function (item) {
+      addMessage(item.role === "user" ? "user" : "assistant", item.content);
+    });
+
+    async function send() {
+      var question = input.value.trim();
+      if (!question) {
+        addMessage("error", "Escribe una pregunta antes de enviar.");
+        return;
+      }
+      addMessage("user", question);
+      input.value = "";
+      try {
+        var response = await fetch("/ask", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-API-Key": keyInput.value
+          },
+          body: JSON.stringify({ question: question, history: chatHistory })
+        });
+        var requestId = response.headers.get("X-Request-ID");
+        if (response.status === 401) {
+          addMessage("error", "Clave inválida");
+          return;
+        }
+        if (response.status === 429) {
+          var wait = response.headers.get("Retry-After") || "60";
+          addMessage("error", "Demasiadas preguntas; espera " + wait + " segundos");
+          return;
+        }
+        if (!response.ok) {
+          addMessage("error", "No se pudo responder (error " + response.status + ").");
+          addMessage("tools", "request_id: " + requestId);
+          return;
+        }
+        var data = await response.json();
+        addMessage("assistant", data.answer);
+        addMessage("tools", "request_id: " + (data.request_id || requestId));
+        if (data.tools_used && data.tools_used.length) {
+          addMessage("tools", "Herramientas usadas: " + data.tools_used.join(", "));
+        }
+        remember("user", question);
+        remember("assistant", data.answer);
+      } catch (error) {
+        addMessage("error", "No se pudo conectar con el servidor.");
+      }
+    }
+
+    button.addEventListener("click", send);
+    input.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        send();
+      }
+    });
+  </script>
+</body>
+</html>
+

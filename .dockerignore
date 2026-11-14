@@ -1,0 +1,21 @@
+# Secretos
+.env
+
+# Pruebas: no hacen falta en la imagen
+tests/
+e2e/
+
+# Cachés y entornos
+__pycache__/
+*.pyc
+.pytest_cache/
+.pylint.d/
+.mypy_cache/
+.ruff_cache/
+.venv/
+.coverage
+htmlcov/
+
+# Control de versiones y CI
+.git/
+.github/
