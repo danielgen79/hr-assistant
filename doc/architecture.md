@@ -1,8 +1,8 @@
 # Arquitectura del HR Assistant
 
-Este documento describe solo lo que existe hoy en `product/` (sesiones 1 a 4).
+Este documento describe solo lo que existe hoy en `product/` (sesiones 1 a 5).
 
-API web sin estado de negocio con un solo agente y dos herramientas de solo lectura. El modelo está detrás de una interfaz. Un enrutador por reglas elige el modelo (pequeño o grande) por pregunta, y cada respuesta calcula su costo en USD a partir de una tabla de precios. La sesión 2 agregó observabilidad, la sesión 3 el control de costos y la sesión 4 la seguridad, el compliance como código y el despliegue.
+API web sin estado de negocio con un solo agente y dos herramientas de solo lectura. El modelo está detrás de una interfaz. Un enrutador por reglas elige el modelo (pequeño o grande) por pregunta, y cada respuesta calcula su costo en USD a partir de una tabla de precios. La sesión 2 agregó observabilidad, la sesión 3 el control de costos, la sesión 4 la seguridad, el compliance como código y el despliegue, y la sesión 5 la detección de datos sensibles, los límites y la validación de entradas y salidas.
 
 ```mermaid
 flowchart LR
@@ -15,7 +15,9 @@ flowchart LR
     S -- "401 sin clave válida<br/>429 con Retry-After" --> W
     S -- "client" --> O[observability.py<br/>JsonLogger + Metrics]
     M -- "request_id, latencia" --> O
-    M -- "choose_model(question, config)" --> R[router.py<br/>regla en código]
+    M -- "mask(question, history)<br/>422 si PII_MODE=block" --> PI[pii.py<br/>regex + Luhn, funciones puras]
+    PI -- "texto enmascarado, conteo por tipo" --> M
+    M -- "choose_model(question limpia, config)" --> R[router.py<br/>regla en código]
     R -- "model, route" --> M
     M -- "run(question, history, model)" --> A[agent.py<br/>bucle con tope + ventana]
     A -- "complete_with_usage(messages, model)" --> L[llm.py]
@@ -27,13 +29,16 @@ flowchart LR
     P --> PJ[(data/model_prices.json)]
     A -- "get_employee<br/>search_by_department" --> D[directory.py]
     D --> J[(data/employees.json)]
+    A -- "audit: solo args conocidos, enmascarados" --> PI
     A -- "agent_run, audit" --> O
+    M -- "mask(answer) siempre,<br/>recorte a MAX_ANSWER_CHARS" --> PI
+    M -- "pii_detected: where, types, count" --> O
     A -. "traced (request_id, client)" .-> T[tracing.py]
     T -. "solo con clave" .-> LS[(LangSmith)]
-    M -- "record_tokens, record_cost" --> O
+    M -- "record_tokens, record_cost, record_pii" --> O
     O -- "una línea JSON por evento" --> OUT[(salida estándar)]
     M -- "GET /metrics" --> O
-    M -- "answer, steps, tools_used, tokens,<br/>cached_calls, cost_usd, model, route, request_id" --> W
+    M -- "answer, steps, tools_used, tokens,<br/>cached_calls, cost_usd, model, route,<br/>request_id, pii" --> W
 
     subgraph Despliegue
         CI[".github/workflows/ci.yml<br/>style, unit, e2e, docker"] --> DF[Dockerfile<br/>python 3.12-slim, usuario sin root]
@@ -46,16 +51,17 @@ flowchart LR
 
 ## Componentes
 
-- `main.py`: rutas `/`, `/health`, `/ask` y `/metrics`; llama a `enforce` al crear la app; `_make_guard` crea la dependencia `require_client` (401, 429 con `Retry-After`) que protege `/ask` y `/metrics`; middleware con `request_id`, latencia, cliente en el log y error 500; responde 502 si `ModelUnavailable`.
+- `main.py`: rutas `/`, `/health`, `/ask` y `/metrics`; llama a `enforce` al crear la app; `_make_guard` crea la dependencia `require_client` (401, 429 con `Retry-After`) que protege `/ask` y `/metrics`; `_check_sizes` limita pregunta e historial (422); `_scan` enmascara y registra `pii_detected`; `AskResponse` declara el esquema de `/ask`; middleware con `request_id`, latencia, cliente en el log, cabeceras `nosniff` y `no-store`, y error 500; responde 502 si `ModelUnavailable`; `invalid_request` evita repetir la entrada rechazada.
+- `pii.py`: `mask`, `merge_counts` y `luhn_valid`, funciones puras sin red ni estado. Detecta `email`, `phone`, `curp`, `rfc`, `card` y `clabe`; no marca ids `EMP-` ni fechas (ADR 0013).
 - `security.py`: `parse_api_keys` (lee `API_KEYS` sin escribir valores en los errores), `authenticate` (`hmac.compare_digest`, sin modo abierto: un mapa vacío nunca autentica) y `RateLimiter` (ventana de un minuto por cliente, reloj inyectado).
 - `compliance.py`: `EXAMPLE_API_KEY`, `check_production` (cinco reglas) y `enforce`, que con `ENVIRONMENT=production` lanza `ComplianceError` si hay violaciones. La clave de ejemplo `demo-example-key-0000` sirve en local y se rechaza en producción (regla `example_api_key`).
-- `config.py`: lee y valida el entorno (proveedor, modelos, enrutamiento, ventana, tope de salida, caché, precios, `ENVIRONMENT`, `API_KEYS`, `RATE_LIMIT_PER_MINUTE`).
+- `config.py`: lee y valida el entorno (proveedor, modelos, enrutamiento, ventana, tope de salida, caché, precios, `ENVIRONMENT`, `API_KEYS`, `RATE_LIMIT_PER_MINUTE`, `PII_MODE`, `MAX_HISTORY_MESSAGES`, `MAX_ANSWER_CHARS`).
 - `router.py`: `choose_model` devuelve modelo y motivo (`routing_disabled`, `too_long`, `keyword`, `simple`).
-- `agent.py`: bucle acotado; recorta el historial a `HISTORY_WINDOW`; acumula tokens, llamadas cacheadas y costo.
+- `agent.py`: bucle acotado; recorta el historial a `HISTORY_WINDOW`; acumula tokens, llamadas cacheadas y costo; `_audit_args` deja en la auditoría solo `employee_id` o `department`, enmascarado y de a lo más 64 caracteres.
 - `llm.py`: `Completion`, `FakeModel`, `GatewayModel` y la fábrica `create_model`.
 - `pricing.py`: `load_prices` y `compute_cost` (USD por millón de tokens).
 - `directory.py`: empleados en memoria, solo lectura.
-- `observability.py`: log JSON, `request_id`, `client_var` y `Metrics` (latencia, errores, tokens, `cost_usd`, SLO).
+- `observability.py`: log JSON, `request_id`, `client_var` y `Metrics` (latencia, errores, tokens, `cost_usd`, `pii_detected`, SLO).
 - `tracing.py`: trazas opcionales en LangSmith, apagadas por omisión; llevan `request_id` y nombre del cliente, nunca la clave.
 - `static/index.html`: la página; pide la clave y la guarda en `sessionStorage`.
 
@@ -66,6 +72,18 @@ Despliegue:
 - `render.yaml`: servicio web en Docker, plan free, `healthCheckPath: /health`, `autoDeployTrigger: checksPass`, `ENVIRONMENT=production`, `MODEL_PROVIDER=gateway`, `HIDE_INPUTS` y `HIDE_OUTPUTS` en `true`; `API_KEYS`, `CF_ACCOUNT_ID` y `CF_API_TOKEN` con `sync: false`.
 - `scripts/smoke.py`: prueba de humo del servicio publicado (`/health` 200, `/ask` sin clave 401, `/ask` con clave 200); la clave sale solo de `SMOKE_API_KEY` y no se imprime.
 - `doc/compliance-checklist.md`: cada regla de compliance con su código y su prueba.
+- `doc/costs.md`: tabla de costos de las palancas y sus trade-offs; `doc/pr.md`: documento de entrega.
+
+## Concurrencia
+
+Con 20 peticiones simultáneas a `/ask`, cada una recibe su propio `request_id`, en la cabecera y en el cuerpo. Funciona por estas razones:
+
+- `ask` y `get_metrics` son funciones síncronas: FastAPI las corre en un pool de hilos, así que una llamada lenta al modelo no bloquea al servidor ni a las demás peticiones. El middleware y la dependencia de clave son asíncronos y solo hacen trabajo corto.
+- El estado de cada petición (`request_id_var`, `client_var`) vive en variables de contexto. El middleware fija el id y el contexto pasa al hilo que atiende esa petición, así que dos peticiones nunca comparten el valor. Como el contexto de la dependencia no regresa al middleware, el cliente viaja también en `request.state`.
+- Lo que sí se comparte entre hilos es el límite de peticiones (`RateLimiter`) y las métricas (`Metrics`); ambos protegen sus contadores con un candado.
+- Ese estado compartido es por proceso (ADR 0005 y 0008): con varias copias del servicio cada una cuenta aparte. El agente, el directorio y `pii.py` no guardan estado entre peticiones (ADR 0001).
+
+La prueba es `verification/contract/test_contract_05.py`: lanza 20 peticiones en paralelo con ids distintos y comprueba el 200 y el id de cada una. No hay una prueba equivalente en `product/tests/`.
 
 ## Decisiones
 
@@ -81,3 +99,4 @@ Despliegue:
 - `adr/0010-rule-based-routing-in-code.md`: el modelo se elige con una regla en código.
 - `adr/0011-cost-levers-history-output-cache.md`: ventana de historial, tope de salida y caché de AI Gateway.
 - `adr/0012-cost-per-response-priced-fake-models.md`: costo por respuesta y modelos simulados con precio.
+- `adr/0013-pii-detection-by-rules.md`: detección de datos sensibles por reglas, en la entrada y en la salida.

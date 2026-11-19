@@ -5,24 +5,27 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from app.agent import Agent
+from app.agent import LIMIT_MESSAGE, Agent
 from app.compliance import enforce
 from app.config import load_config
 from app.directory import Directory
 from app.llm import ModelUnavailable, create_model
 from app.observability import JsonLogger, Metrics, client_var, request_id_var
+from app.pii import mask, merge_counts
 from app.pricing import load_prices
 from app.router import choose_model
 from app.security import RateLimiter, authenticate
 from app.tracing import setup_tracing
 
 MAX_REQUEST_ID_CHARS = 128
+NO_STORE_PATHS = ("/ask", "/metrics")
 
 APP_DIR = Path(__file__).resolve().parent
 PRODUCT_DIR = APP_DIR.parent
@@ -41,6 +44,22 @@ class AskRequest(BaseModel):
 
     question: str
     history: Optional[List[HistoryItem]] = None
+
+
+class AskResponse(BaseModel):  # pylint: disable=too-few-public-methods
+    """Respuesta de ``POST /ask``; ``pii`` cuenta hallazgos por tipo."""
+
+    answer: str
+    steps: int
+    tools_used: List[str]
+    input_tokens: int
+    output_tokens: int
+    cached_calls: int
+    cost_usd: float
+    model: str
+    route: str
+    request_id: Optional[str] = None
+    pii: Dict[str, int]
 
 
 def _resolve_path(path):
@@ -114,6 +133,60 @@ def _make_guard(config, rate_clock):
     return require_client
 
 
+async def invalid_request(_request, _error):
+    """Responde 422 sin repetir la entrada rechazada (podria ser sensible).
+
+    :return: La respuesta 422 con el id de la peticion
+    :rtype: JSONResponse
+    """
+    return JSONResponse(
+        {"detail": "invalid request", "request_id": request_id_var.get()},
+        status_code=422,
+    )
+
+
+def _check_sizes(body, config):
+    """Rechaza con 422 una pregunta o un historial fuera de los limites.
+
+    :param body: Cuerpo de la peticion
+    :type body: AskRequest
+    :param config: Configuracion con los limites
+    :type config: Config
+    :raises HTTPException: 422 si algun limite se excede
+    """
+    if not body.question.strip() or len(body.question) > config.max_question_chars:
+        raise HTTPException(status_code=422, detail="Invalid question length")
+    items = body.history or []
+    if len(items) > config.max_history_messages or any(
+        len(item.content) > config.max_question_chars for item in items
+    ):
+        raise HTTPException(status_code=422, detail="Invalid history size")
+
+
+def _scan(log, where, text, found):
+    """Enmascara un texto y registra el hallazgo sin escribir el valor.
+
+    :param log: Funcion ``log(event, **fields)``
+    :type log: Callable
+    :param where: ``question``, ``history`` o ``answer``
+    :type where: str
+    :param text: Texto a revisar
+    :type text: str
+    :param found: Lista donde se agrega el conteo por tipo
+    :type found: list
+    :return: El texto enmascarado
+    :rtype: str
+    """
+    masked, counts = mask(text)
+    if counts:
+        log(
+            "pii_detected", where=where, types=sorted(counts),
+            count=sum(counts.values()),
+        )
+        found.append(counts)
+    return masked
+
+
 def create_app(config=None, model=None, directory=None, clock=None,
                rate_clock=None):
     """Crea la aplicacion con sus dependencias.
@@ -146,6 +219,8 @@ def create_app(config=None, model=None, directory=None, clock=None,
     )
     application = FastAPI(title="HR Assistant")
 
+    application.add_exception_handler(RequestValidationError, invalid_request)
+
     @application.middleware("http")
     async def observe(request: Request, call_next):
         """Asigna el id, mide la latencia, registra y maneja los fallos."""
@@ -163,6 +238,9 @@ def create_app(config=None, model=None, directory=None, clock=None,
             )
         latency_ms = round((time.perf_counter() - started) * 1000, 3)
         response.headers["X-Request-ID"] = request_id
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        if request.url.path in NO_STORE_PATHS:
+            response.headers["Cache-Control"] = "no-store"
         metrics.record_request(response.status_code, latency_ms)
         # El contexto de la dependencia no llega aqui: el cliente va en state.
         extra = {}
@@ -190,22 +268,48 @@ def create_app(config=None, model=None, directory=None, clock=None,
         """Informa que el proceso esta vivo."""
         return {"status": "ok", "pid": os.getpid()}
 
-    @application.post("/ask", dependencies=[Depends(require_client)])
+    @application.post(
+        "/ask", dependencies=[Depends(require_client)], response_model=AskResponse
+    )
     def ask(body: AskRequest):
         """Responde una pregunta sin guardar nada."""
-        question = body.question.strip()
-        if not question or len(body.question) > config.max_question_chars:
-            raise HTTPException(status_code=422, detail="Invalid question length")
-        history = [item.model_dump() for item in body.history or []]
-        model_name, route = choose_model(body.question, config)
+        _check_sizes(body, config)
+        # Se enmascara antes del enrutador y del agente: el modelo, la traza y
+        # el log nunca ven el valor original.
+        found = []
+        clean_question = _scan(logger.log, "question", body.question, found)
+        history = [
+            {
+                "role": item.role,
+                "content": _scan(logger.log, "history", item.content, found),
+            }
+            for item in body.history or []
+        ]
+        metrics.record_pii(sum(sum(counts.values()) for counts in found))
+        if config.pii_mode == "block" and found:
+            return JSONResponse(
+                {
+                    "detail": "sensitive data detected",
+                    "types": sorted(merge_counts(*found)),
+                    "request_id": request_id_var.get(),
+                },
+                status_code=422,
+            )
+        model_name, route = choose_model(clean_question, config)
         try:
-            result = agent.run(body.question, history, model_name)
+            result = agent.run(clean_question, history, model_name)
         except ModelUnavailable as error:
             logger.log("error", error_type=type(error).__name__)
             return JSONResponse(
                 {"detail": "model unavailable", "request_id": request_id_var.get()},
                 status_code=502,
             )
+        # La respuesta siempre se enmascara, tambien con PII_MODE=block.
+        out = []
+        answer = _scan(logger.log, "answer", result["answer"], out).strip()
+        metrics.record_pii(sum(sum(counts.values()) for counts in out))
+        result["answer"] = answer[: config.max_answer_chars] or LIMIT_MESSAGE
+        pii = merge_counts(*found, *out)
         metrics.record_tokens(result["input_tokens"], result["output_tokens"])
         metrics.record_cost(result["cost_usd"])
         return {
@@ -213,6 +317,7 @@ def create_app(config=None, model=None, directory=None, clock=None,
             "model": model_name,
             "route": route,
             "request_id": request_id_var.get(),
+            "pii": pii,
         }
 
     @application.get("/metrics", dependencies=[Depends(require_client)])

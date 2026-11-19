@@ -107,10 +107,32 @@ tabla está en `doc/compliance-checklist.md`.
 El límite de peticiones cuenta por proceso, igual que `/metrics`: con varias
 copias, cada una cuenta aparte.
 
+## Datos sensibles y límites (sesión 5)
+
+`POST /ask` revisa la pregunta y cada `content` del historial antes de llamar
+al modelo. Detecta `email`, `phone`, `curp`, `rfc`, `card` (con suma de Luhn) y
+`clabe`; los ids de empleado y las fechas no cuentan. La detección es por
+reglas: puede dar falsos positivos y no reconoce nombres propios.
+
+| Variable | Por omisión | Para qué |
+| --- | --- | --- |
+| `PII_MODE` | `mask` | `mask` reemplaza cada hallazgo por `[EMAIL]`, `[PHONE]`, `[CURP]`, `[RFC]`, `[CARD]` o `[CLABE]`; `block` responde `422` y no llama al modelo |
+| `MAX_HISTORY_MESSAGES` | `20` | Mensajes máximos en `history`; cada `content` cabe en `MAX_QUESTION_CHARS` |
+| `MAX_ANSWER_CHARS` | `4000` | Largo máximo de la respuesta; si es más larga se recorta |
+
+No hay modo apagado. La respuesta (`answer`) siempre se enmascara, también con
+`block`. `POST /ask` devuelve `pii` con el conteo por tipo (`{}` si no hubo
+nada) y `/metrics` suma `pii_detected`. El valor nunca llega al log, a la
+traza ni a un error. Un `422` de validación no repite lo recibido. Toda
+respuesta lleva `X-Content-Type-Options: nosniff`; `/ask` y `/metrics` llevan
+además `Cache-Control: no-store`. La auditoría guarda solo el argumento que
+conoce cada herramienta, enmascarado y de a lo más 64 caracteres.
+
 ## Log
 
 Una línea JSON por evento en la salida estándar, con `ts`, `service`, `event`
-y `request_id`. Eventos: `request`, `agent_run`, `audit` y `error`.
+y `request_id`. Eventos: `request`, `agent_run`, `audit`, `pii_detected`
+(`where`, `types` y `count`, nunca el valor) y `error`.
 
 ## Pruebas
 

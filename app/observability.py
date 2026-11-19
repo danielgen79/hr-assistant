@@ -73,6 +73,7 @@ class Metrics:
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost_usd = 0.0
+        self._pii_detected = 0
 
     def record_request(self, status, latency_ms):
         """Registra una peticion terminada.
@@ -106,6 +107,15 @@ class Metrics:
         with self._lock:
             self._cost_usd += cost_usd
 
+    def record_pii(self, count):
+        """Suma los hallazgos de datos sensibles de una peticion.
+
+        :param count: Cantidad de hallazgos
+        :type count: int
+        """
+        with self._lock:
+            self._pii_detected += count
+
     def snapshot(self, slo_p95_ms):
         """Resume el estado actual con la forma de ``GET /metrics``.
 
@@ -128,5 +138,6 @@ class Metrics:
                     "output": self._output_tokens,
                 },
                 "cost_usd": self._cost_usd,
+                "pii_detected": self._pii_detected,
                 "slo": {"p95_ms_target": slo_p95_ms, "met": p95 < slo_p95_ms},
             }

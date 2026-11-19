@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 
 from app.llm import TOOL_RESULT_PREFIX, Completion, count_tokens
+from app.pii import mask
 from app.pricing import compute_cost
 from app.tracing import traced
 
@@ -11,6 +12,28 @@ LIMIT_MESSAGE = (
     "No pude completar la respuesta. Intenta con una pregunta más concreta."
 )
 KNOWN_TOOLS = ("get_employee", "search_by_department")
+AUDIT_ARGUMENTS = {"get_employee": "employee_id", "search_by_department": "department"}
+MAX_AUDIT_CHARS = 64
+
+
+def _audit_args(tool, args):
+    """Deja en la auditoria solo el argumento que la herramienta conoce.
+
+    El valor se enmascara y se recorta a ``MAX_AUDIT_CHARS``; cualquier otro
+    argumento que invente el modelo no llega al log.
+
+    :param tool: Nombre de la herramienta
+    :type tool: str
+    :param args: Argumentos pedidos por el modelo
+    :type args: dict
+    :return: Argumentos seguros para el log
+    :rtype: dict
+    """
+    key = AUDIT_ARGUMENTS[tool]
+    if key not in args:
+        return {}
+    masked, _counts = mask(str(args[key]))
+    return {key: masked[:MAX_AUDIT_CHARS]}
 
 
 def _discard(_event, **_fields):
@@ -189,7 +212,9 @@ class Agent:
         if not isinstance(args, dict):
             args = {}
         if name in KNOWN_TOOLS:
-            self._log("audit", action="tool_call", tool=name, args=args)
+            self._log(
+                "audit", action="tool_call", tool=name, args=_audit_args(name, args)
+            )
         try:
             if name == "get_employee":
                 found = self._directory.get_employee(args["employee_id"])
