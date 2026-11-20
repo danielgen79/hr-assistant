@@ -8,7 +8,7 @@ from pytest_bdd import given, parsers, scenarios, then, when
 
 scenarios("features/costs.feature")
 
-PRICES_FILE = Path(__file__).resolve().parents[2] / "spec" / "model_prices.json"
+PRICES_FILE = Path(__file__).resolve().parents[1] / "data" / "model_prices.json"
 MILLION = 1_000_000
 
 

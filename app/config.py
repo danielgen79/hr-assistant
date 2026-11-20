@@ -21,6 +21,10 @@ DEFAULT_ROUTER_MAX_CHARS = 80
 DEFAULT_HISTORY_WINDOW = 6
 DEFAULT_MODEL_MAX_TOKENS = 300
 DEFAULT_PRICES_PATH = "data/model_prices.json"
+PII_MODES = ("mask", "block")
+DEFAULT_PII_MODE = "mask"
+DEFAULT_MAX_HISTORY_MESSAGES = 20
+DEFAULT_MAX_ANSWER_CHARS = 4000
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,9 @@ class Config:  # pylint: disable=too-many-instance-attributes
     :param environment: ``development`` o ``production``
     :param api_keys: Mapa cliente a clave (secreto, no sale en ``repr``)
     :param rate_limit_per_minute: Peticiones por cliente por minuto
+    :param pii_mode: ``mask`` enmascara y sigue; ``block`` rechaza con 422
+    :param max_history_messages: Mensajes maximos en ``history``
+    :param max_answer_chars: Largo maximo de la respuesta
     """
 
     model_provider: str
@@ -77,6 +84,9 @@ class Config:  # pylint: disable=too-many-instance-attributes
     environment: str = DEFAULT_ENVIRONMENT
     api_keys: Dict[str, str] = field(default_factory=dict, repr=False)
     rate_limit_per_minute: int = DEFAULT_RATE_LIMIT_PER_MINUTE
+    pii_mode: str = DEFAULT_PII_MODE
+    max_history_messages: int = DEFAULT_MAX_HISTORY_MESSAGES
+    max_answer_chars: int = DEFAULT_MAX_ANSWER_CHARS
 
 
 def _read_non_negative_int(env, name, default):
@@ -199,6 +209,10 @@ def load_config(env: Mapping[str, str]) -> Config:
     environment = env.get("ENVIRONMENT", DEFAULT_ENVIRONMENT).strip().lower()
     if environment not in ENVIRONMENTS:
         raise ValueError("ENVIRONMENT must be 'development' or 'production'")
+    pii_mode = env.get("PII_MODE", DEFAULT_PII_MODE).strip().lower()
+    if pii_mode not in PII_MODES:
+        # Sin el valor leido: solo los modos validos.
+        raise ValueError("PII_MODE must be 'mask' or 'block'")
     provider = env.get("MODEL_PROVIDER", DEFAULT_MODEL_PROVIDER)
     if provider == "gateway":
         _check_gateway(env)
@@ -238,5 +252,12 @@ def load_config(env: Mapping[str, str]) -> Config:
         api_keys=parse_api_keys(env.get("API_KEYS", "")),
         rate_limit_per_minute=_read_positive_int(
             env, "RATE_LIMIT_PER_MINUTE", DEFAULT_RATE_LIMIT_PER_MINUTE
+        ),
+        pii_mode=pii_mode,
+        max_history_messages=_read_positive_int(
+            env, "MAX_HISTORY_MESSAGES", DEFAULT_MAX_HISTORY_MESSAGES
+        ),
+        max_answer_chars=_read_positive_int(
+            env, "MAX_ANSWER_CHARS", DEFAULT_MAX_ANSWER_CHARS
         ),
     )

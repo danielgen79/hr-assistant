@@ -4,13 +4,53 @@ import json
 from dataclasses import dataclass
 
 from app.llm import TOOL_RESULT_PREFIX, Completion, count_tokens
+from app.pii import mask
 from app.pricing import compute_cost
 from app.tracing import traced
 
 LIMIT_MESSAGE = (
     "No pude completar la respuesta. Intenta con una pregunta más concreta."
 )
+SYSTEM_MESSAGE = (
+    "Eres un asistente de recursos humanos. Solo conoces lo que devuelve el "
+    "directorio de empleados; no uses otro conocimiento.\n"
+    "En cada turno responde con un único objeto JSON, sin texto antes ni "
+    "después y sin bloques de código.\n"
+    "Herramientas disponibles:\n"
+    "1. get_employee, con el argumento employee_id. Ejemplo: "
+    '{"tool": "get_employee", "args": {"employee_id": "EMP-0001"}}\n'
+    "2. search_by_department, con el argumento department. Ejemplo: "
+    '{"tool": "search_by_department", "args": {"department": "Ventas"}}\n'
+    "Después de pedir una herramienta, detente y espera su resultado. Llegará "
+    "en un mensaje que empieza con 'Resultado de la herramienta:'. Solo "
+    "entonces responde con "
+    '{"answer": "..."}.\n'
+    "Si el directorio no tiene el dato, dilo en la respuesta y no inventes "
+    "nada."
+)
 KNOWN_TOOLS = ("get_employee", "search_by_department")
+AUDIT_ARGUMENTS = {"get_employee": "employee_id", "search_by_department": "department"}
+MAX_AUDIT_CHARS = 64
+
+
+def _audit_args(tool, args):
+    """Deja en la auditoria solo el argumento que la herramienta conoce.
+
+    El valor se enmascara y se recorta a ``MAX_AUDIT_CHARS``; cualquier otro
+    argumento que invente el modelo no llega al log.
+
+    :param tool: Nombre de la herramienta
+    :type tool: str
+    :param args: Argumentos pedidos por el modelo
+    :type args: dict
+    :return: Argumentos seguros para el log
+    :rtype: dict
+    """
+    key = AUDIT_ARGUMENTS[tool]
+    if key not in args:
+        return {}
+    masked, _counts = mask(str(args[key]))
+    return {key: masked[:MAX_AUDIT_CHARS]}
 
 
 def _discard(_event, **_fields):
@@ -92,7 +132,14 @@ class Agent:
                 answer = payload["answer"]
                 break
             feedback = self._run_tool(payload, tools_used)
-            messages.append({"role": "assistant", "content": completion.text})
+            # Solo el primer objeto vuelve al contexto: lo que el modelo
+            # invente despues de la herramienta no debe contaminar el paso.
+            kept = (
+                completion.text
+                if payload is None
+                else json.dumps(payload, ensure_ascii=False)
+            )
+            messages.append({"role": "assistant", "content": kept})
             messages.append(
                 {"role": "user", "content": TOOL_RESULT_PREFIX + feedback}
             )
@@ -108,7 +155,11 @@ class Agent:
         }
 
     def _build_messages(self, question, history):
-        """Arma la conversacion: ventana de historial mas la pregunta."""
+        """Arma la conversacion: ventana de historial mas la pregunta.
+
+        El mensaje de sistema no se incluye aqui: se antepone en ``_complete``
+        para que nunca viaje en los argumentos de las trazas.
+        """
         sent = self._window(list(history or []))
         messages = [dict(item) for item in sent]
         messages.append({"role": "user", "content": question})
@@ -154,6 +205,7 @@ class Agent:
         :return: La respuesta del modelo con su uso
         :rtype: Completion
         """
+        messages = [{"role": "system", "content": SYSTEM_MESSAGE}, *messages]
         with_usage = getattr(self._model, "complete_with_usage", None)
         if with_usage is not None:
             return with_usage(messages, model_name)
@@ -167,12 +219,20 @@ class Agent:
     def _parse(reply):
         """Interpreta la respuesta del modelo.
 
-        :return: El objeto JSON o ``None`` si no es un objeto valido
+        Toma el primer objeto JSON desde la primera llave y descarta el resto
+        (texto previo, bloques de codigo, objetos posteriores).
+
+        :return: El primer objeto JSON o ``None`` si no hay uno valido
         :rtype: dict or None
         """
+        if not isinstance(reply, str):
+            return None
+        start = reply.find("{")
+        if start == -1:
+            return None
         try:
-            payload = json.loads(reply)
-        except (TypeError, ValueError):
+            payload, _end = json.JSONDecoder().raw_decode(reply, start)
+        except (ValueError, RecursionError):
             return None
         return payload if isinstance(payload, dict) else None
 
@@ -189,7 +249,9 @@ class Agent:
         if not isinstance(args, dict):
             args = {}
         if name in KNOWN_TOOLS:
-            self._log("audit", action="tool_call", tool=name, args=args)
+            self._log(
+                "audit", action="tool_call", tool=name, args=_audit_args(name, args)
+            )
         try:
             if name == "get_employee":
                 found = self._directory.get_employee(args["employee_id"])

@@ -21,7 +21,9 @@ def test_only_the_last_history_messages_reach_the_model(build_client):
     ]
     response = client.post("/ask", json={"question": "Hi", "history": history})
     assert response.status_code == 200
-    sent = [message["content"] for message in model.calls[0]]
+    sent = [
+        message["content"] for message in model.calls[0] if message["role"] != "system"
+    ]
     assert sent == ["msg-3", "msg-4", "Hi"]
     assert model.model_names == [SMALL]
 
