@@ -1,4 +1,4 @@
-# Lista de compliance (sesiones 4 y 5)
+# Lista de compliance (sesiones 4 a 6)
 
 Con `ENVIRONMENT=production`, `create_app` llama a `compliance.enforce` y el
 producto se niega a arrancar si alguna regla se viola. El error nombra la regla,
@@ -24,3 +24,10 @@ nunca el valor.
 | La salida está validada: modelo de respuesta, texto no vacío y recortado a `MAX_ANSWER_CHARS` | `app/main.py`, `AskResponse` y `ask` | `tests/test_pii_api.py`, esquema, recorte y respuesta vacía |
 | Cabeceras `X-Content-Type-Options: nosniff` y `Cache-Control: no-store` en `/ask` y `/metrics` | `app/main.py`, middleware `observe` | `tests/test_pii_api.py`, cabeceras |
 | La auditoría guarda solo los argumentos conocidos, enmascarados y de 64 caracteres o menos | `app/agent.py`, `_audit_args` | `tests/test_pii_agent_config.py`, auditoría |
+| Con `MODEL_PROVIDER=gateway` son obligatorias las tres variables `CF_ACCOUNT_ID`, `CF_GATEWAY_ID` y `CF_API_TOKEN`; el error nombra la variable, nunca el valor | `app/config.py`, `_check_gateway` | `tests/test_costs_config.py`, una prueba por variable faltante |
+| Render pide a la persona las tres variables `CF_*` (`sync: false`) y no llevan valor en el repositorio; `README.md` las lista | `render.yaml`; `README.md`; `.env.example` (sin valores secretos) | `tests/test_real_model.py`, archivos de despliegue; `tests/test_deployment_files.py` cubre `API_KEYS`, `CF_ACCOUNT_ID` y `CF_API_TOKEN` |
+| El mensaje de sistema es un texto fijo, sin datos del directorio ni claves; no se escribe en el log ni en la traza | `app/agent.py`, `SYSTEM_MESSAGE` y `_complete` | `tests/test_real_model.py`, mensaje sin datos, log y argumentos trazados |
+| El mensaje de sistema no entra en `HISTORY_WINDOW` ni en `MAX_HISTORY_MESSAGES` | `app/agent.py`, `_complete`, `_build_messages` | `tests/test_real_model.py`, ventana y límite del historial |
+| El lector toma solo el primer objeto JSON; lo que el modelo invente después de la herramienta no se usa | `app/agent.py`, `_parse` y `run` | `tests/test_real_model.py`, primer objeto, respuesta inventada y texto sin JSON |
+
+Nota sobre las variables `CF_*`: `CF_API_TOKEN` es secreto y nunca se versiona ni se imprime. `CF_ACCOUNT_ID` y `CF_GATEWAY_ID` no lo son tanto, pero se tratan igual en Render. Las pruebas de la sesión 6 usan un modelo de prueba, no el real: que el agente funcione con el gateway lo comprueba una persona después de publicar (`doc/costs.md`).

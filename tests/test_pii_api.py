@@ -25,7 +25,9 @@ def test_sensitive_data_in_the_history_is_masked_before_the_model(build_client):
     body = {**QUESTION, "history": history}
     model, response = _ask_with_model(build_client, "ok", body=body)
     assert response.json()["pii"] == {"email": 1}
-    sent = [message["content"] for message in model.calls[0]]
+    sent = [
+        message["content"] for message in model.calls[0] if message["role"] != "system"
+    ]
     assert sent[0] == "My email is [EMAIL]"
     assert EMAIL not in str(model.calls)
 

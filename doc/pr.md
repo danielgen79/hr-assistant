@@ -44,7 +44,9 @@ Guion de a lo más 5 minutos: una pregunta, el 401 sin clave, un dato sensible e
 
 ## Notas
 
-- Costos: ahorro de 86.7 % con todas las palancas y calidad de 100 % en el set de evaluación, con modelos simulados. El tope de salida y la caché no se pudieron medir sin el modelo real; los pasos están en `doc/costs.md`.
+- Costos: ahorro de 86.0 % con todas las palancas y calidad de 100 % en el set de evaluación, con modelos simulados. El tope de salida y la caché no se pudieron medir sin el modelo real; los pasos están en `doc/costs.md`.
+- Hallazgo con el modelo real: hasta la sesión 5 el agente solo se había probado con modelos simulados. Con el gateway real fallaba con los dos modelos, porque nunca se le indicaba al modelo el protocolo JSON y el lector era estricto. La sesión 6 agrega un mensaje de sistema y un lector que toma solo el primer objeto JSON (ADR 0014). La calidad de 100 % de la tabla de costos es una medición solo con el modelo simulado. Resultado de la verificación con el modelo real: PENDIENTE.
+- Entrega: la plataforma no asignó un repositorio base. El PR compara main contra base-sesion-4, que apunta al estado previo a la sesión 5 (commit 80d540f), de modo que el diff muestra solo los cambios de las sesiones 5 y 6.
 - Limitaciones conocidas: detección por reglas; límite de peticiones y métricas por proceso, no compartidos entre copias.
 - Pendientes de la persona: la URL pública, el enlace del video, la captura de una traza en LangSmith y la de `/metrics`.
 
