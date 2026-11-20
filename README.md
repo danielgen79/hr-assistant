@@ -4,29 +4,82 @@ API web sin estado con un agente que responde preguntas sobre empleados y
 departamentos con herramientas de solo lectura. Cada petición queda trazable:
 lleva un `request_id`, deja líneas de log en JSON y alimenta `GET /metrics`.
 
+## Requisitos previos
+
+- Python 3.12 y `pip`.
+- Docker, solo si quieres correr la imagen.
+
 ## Cómo correrlo
 
+Clona el repositorio e instala las dependencias:
+
 ```
+git clone https://github.com/danielgen79/hr-assistant.git
+cd hr-assistant
 pip install -r requirements.txt
-uvicorn app.main:app --port 8000
 ```
 
-Por omisión arranca con el modelo simulado (`MODEL_PROVIDER=fake`), que no
-necesita red ni credenciales.
+El producto lee sus variables del entorno del proceso, no de un archivo `.env`:
+defínelas en tu terminal antes de arrancar. `.env.example` es la lista de
+referencia de todas las variables. No hay modo abierto: sin `API_KEYS`, `/ask`
+y `/metrics` responden 401, así que en local usa la clave de ejemplo. Con el
+modelo simulado no hace falta red ni credenciales.
 
-Con el gateway (Cloudflare AI Gateway), copia `.env.example` a `.env`, llena
-`CF_ACCOUNT_ID`, `CF_GATEWAY_ID` y `CF_API_TOKEN`, y arranca así:
+Linux o macOS:
 
 ```
-MODEL_PROVIDER=gateway uvicorn app.main:app --port 8000
+API_KEYS=demo:demo-example-key-0000 uvicorn app.main:app --port 8000
 ```
 
-Si falta alguna variable obligatoria del gateway, el arranque falla con un
-mensaje claro. El token nunca se escribe en el repositorio.
+Windows PowerShell:
+
+```
+$env:API_KEYS = "demo:demo-example-key-0000"; uvicorn app.main:app --port 8000
+```
+
+Abre http://localhost:8000, escribe `demo-example-key-0000` en el campo de
+clave y pregunta `¿Quién es EMP-0004?`. La documentación de la API está en
+http://localhost:8000/docs.
+
+Con el modelo real (Cloudflare AI Gateway) define además `MODEL_PROVIDER=gateway`,
+`CF_ACCOUNT_ID`, `CF_GATEWAY_ID` y `CF_API_TOKEN`. Las tres variables `CF_*` son
+obligatorias: si falta alguna, el arranque falla con un mensaje claro. El token
+nunca se escribe en el repositorio.
+
+Con Docker:
+
+```
+docker build -t hr-assistant .
+docker run -p 8000:8000 -e API_KEYS=demo:demo-example-key-0000 hr-assistant
+```
+
+La imagen corre sin root y escucha en el puerto de la variable `PORT` (8000 por
+omisión).
 
 Rutas: `GET /` (página web), `GET /health`, `POST /ask`, `GET /metrics`.
 Toda respuesta trae el encabezado `X-Request-ID`; `POST /ask` también lo
 devuelve como `request_id` en el cuerpo.
+
+## Despliegue en Render
+
+`render.yaml` describe el servicio: imagen Docker, plan free, comprobación de
+salud en `/health` y despliegue automático solo cuando el CI pasa. Se crea con
+**New > Blueprint**, conectando el repositorio.
+
+Render pide los secretos, que nunca están en el repositorio: `API_KEYS` (con
+claves de 16 caracteres o más, nunca la de ejemplo), `CF_ACCOUNT_ID`,
+`CF_GATEWAY_ID` y `CF_API_TOKEN`. Para las trazas, agrega `LANGSMITH_TRACING=true`
+y `LANGSMITH_API_KEY`. Con `ENVIRONMENT=production` el producto no arranca si
+viola una regla de compliance (`doc/compliance-checklist.md`).
+
+Prueba de humo del servicio publicado, con la clave leída solo del entorno:
+
+```
+$env:SMOKE_API_KEY = Read-Host "Clave"
+python scripts/smoke.py https://TU-SERVICIO.onrender.com
+```
+
+En Linux o macOS: `SMOKE_API_KEY=<clave> python scripts/smoke.py <url>`.
 
 ## Variables de entorno
 
@@ -47,12 +100,12 @@ devuelve como `request_id` en el cuerpo.
 Con `MODEL_PROVIDER=gateway` el modelo es Cloudflare Workers AI a través de
 AI Gateway. Con `fake` hay dos modelos simulados que se llaman como
 `MODEL_SMALL` y `MODEL_LARGE`; responden igual, pero el costo usa el precio de
-su nombre. Copia `.env.example` a `.env`; el token nunca se escribe en el
+su nombre. `.env.example` lista las variables; el token nunca se escribe en el
 repositorio.
 
 | Variable | Por omisión | Para qué |
 | --- | --- | --- |
-| `CF_ACCOUNT_ID`, `CF_GATEWAY_ID`, `CF_API_TOKEN` | vacía, `default`, vacía | Cuenta, gateway y token (secreto); con `gateway` son obligatorias |
+| `CF_ACCOUNT_ID`, `CF_GATEWAY_ID`, `CF_API_TOKEN` | sin valor | Cuenta, gateway y token (secreto); con `gateway` las tres son obligatorias y hay que definirlas |
 | `MODEL_SMALL` | `@cf/meta/llama-3.1-8b-instruct-fast` | Modelo barato |
 | `MODEL_LARGE` | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | Modelo capaz |
 | `ROUTING` | `true` | Enrutamiento por pregunta |
@@ -93,8 +146,9 @@ error. El log, la auditoría y la traza llevan el nombre del cliente (`client`).
 
 ### Clave de ejemplo para usar en local
 
-1. Copia `.env.example` a `.env`. Trae `API_KEYS=demo:demo-example-key-0000`.
-2. Arranca el servicio con esas variables cargadas.
+1. `.env.example` trae `API_KEYS=demo:demo-example-key-0000`.
+2. Define esa variable en tu terminal, como en «Cómo correrlo»: el producto no
+   carga el archivo `.env` por sí solo.
 3. Escribe `demo-example-key-0000` en el campo de clave de la página, o mándala
    en `X-API-Key`. La página la guarda solo en `sessionStorage`.
 
@@ -128,21 +182,43 @@ respuesta lleva `X-Content-Type-Options: nosniff`; `/ask` y `/metrics` llevan
 además `Cache-Control: no-store`. La auditoría guarda solo el argumento que
 conoce cada herramienta, enmascarado y de a lo más 64 caracteres.
 
+## Modelo real (sesión 6)
+
+Con el gateway, el agente antepone a cada llamada un mensaje de sistema fijo que
+explica el protocolo JSON y las dos herramientas, y lee solo el primer objeto
+JSON de cada respuesta del modelo (ADR 0014). Ese mensaje no cuenta como
+historial, no llega al log ni a las trazas, y suma tokens de entrada a cada
+llamada (ver `doc/costs.md`). Sin él, los modelos reales no seguían el
+protocolo y `/ask` terminaba siempre con el mensaje de límite.
+
 ## Log
 
 Una línea JSON por evento en la salida estándar, con `ts`, `service`, `event`
 y `request_id`. Eventos: `request`, `agent_run`, `audit`, `pii_detected`
 (`where`, `types` y `count`, nunca el valor) y `error`.
 
+## Límites conocidos
+
+- La detección de datos sensibles es por reglas: no reconoce nombres propios,
+  formatos con paréntesis o puntos como `(442) 123-4567`, ni una CURP o un RFC
+  en minúsculas (ADR 0013).
+- `/metrics` y el límite de peticiones son por proceso, no se comparten entre
+  copias del servicio.
+- La latencia de `/metrics` mezcla todas las rutas, incluido el `/health` que
+  consulta Render, así que el p95 y el SLO se ven mejor de lo que son para
+  `/ask`.
+- Con el modelo real solo se ha comprobado el agente con preguntas sobre
+  empleados concretos; `doc/costs.md` explica qué falta por medir.
+
 ## Pruebas
 
 ```
-uv run python -m verification unit      # pruebas unitarias, sin red
-uv run python -m verification e2e       # pruebas de extremo a extremo
-uv run python -m verification evaluate  # evaluación del agente y su costo
-uv run python -m verification qa        # revisión de calidad (pylint)
+python -m pytest tests --cov=app --cov-fail-under=80
 ```
 
-Ninguna prueba llama a la red: el cliente HTTP del gateway se inyecta.
+Son pruebas unitarias y de comportamiento con cobertura mínima de 80 %. Ninguna
+llama a la red: el cliente HTTP del gateway se inyecta. El CI
+(`.github/workflows/ci.yml`) corre además pylint, las pruebas de punta a punta
+con Playwright y la construcción de la imagen.
 
 La arquitectura y las decisiones están en `doc/`.
