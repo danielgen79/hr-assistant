@@ -69,5 +69,5 @@ Lo llena una persona después de publicar y de que Render termine de desplegar. 
 
 | Modelo | Respuestas correctas (de 8) | Tokens de entrada | Tokens de salida | Costo USD |
 | --- | --- | --- | --- | --- |
-| pequeño | PENDIENTE | PENDIENTE | PENDIENTE | PENDIENTE |
-| grande | PENDIENTE | PENDIENTE | PENDIENTE | PENDIENTE |
+| pequeño | 1 de 1 (¿Quién es EMP-0004?) | PENDIENTE | PENDIENTE | 0.0000477 |
+| grande | 1 de 1 (Explica quién es EMP-0004) | PENDIENTE | PENDIENTE | 0.000323 |

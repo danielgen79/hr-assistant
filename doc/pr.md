@@ -34,18 +34,18 @@ Detalle en `README.md`.
 5. Para el modelo real: `MODEL_PROVIDER=gateway` y las variables `CF_*` en el entorno, nunca en un archivo.
 6. Pruebas, desde `product/`: `python -m pytest tests --cov=app --cov-fail-under=80`. El CI además corre pylint, las pruebas de punta a punta con Playwright y la construcción de la imagen.
 
-URL pública: PENDIENTE
+URL pública: https://hr-assistant-gww6.onrender.com/
 
 ## Video
 
-Enlace: PENDIENTE
+Enlace: se adjunta en la plataforma
 
 Guion de a lo más 5 minutos: una pregunta, el 401 sin clave, un dato sensible enmascarado, la traza en LangSmith (con `HIDE_INPUTS=true` muestra la estructura sin el texto, y es lo correcto), `/metrics`, la tabla de costos, el CI en verde y el servicio en Render.
 
 ## Notas
 
 - Costos: ahorro de 86.0 % con todas las palancas y calidad de 100 % en el set de evaluación, con modelos simulados. El tope de salida y la caché no se pudieron medir sin el modelo real; los pasos están en `doc/costs.md`.
-- Hallazgo con el modelo real: hasta la sesión 5 el agente solo se había probado con modelos simulados. Con el gateway real fallaba con los dos modelos, porque nunca se le indicaba al modelo el protocolo JSON y el lector era estricto. La sesión 6 agrega un mensaje de sistema y un lector que toma solo el primer objeto JSON (ADR 0014). La calidad de 100 % de la tabla de costos es una medición solo con el modelo simulado. Resultado de la verificación con el modelo real: PENDIENTE.
+- Hallazgo con el modelo real: hasta la sesión 5 el agente solo se había probado con modelos simulados. Con el gateway real fallaba con los dos modelos, porque nunca se le indicaba al modelo el protocolo JSON y el lector era estricto. La sesión 6 agrega un mensaje de sistema y un lector que toma solo el primer objeto JSON (ADR 0014). La calidad de 100 % de la tabla de costos es una medición solo con el modelo simulado. Resultado de la verificación con el modelo real: Resultado de la verificación con el modelo real: con una pregunta por modelo, ambos usaron get_employee en 2 pasos y respondieron con los datos del directorio (0.0000477 USD el pequeño y 0.000323 USD el grande); antes del arreglo ambos fallaban y cada fallo costaba entre 3 y 5 veces más que un acierto..
 - Entrega: la plataforma no asignó un repositorio base. El PR compara main contra base-sesion-4, que apunta al estado previo a la sesión 5 (commit 80d540f), de modo que el diff muestra solo los cambios de las sesiones 5 y 6.
 - Limitaciones conocidas: detección por reglas; límite de peticiones y métricas por proceso, no compartidos entre copias.
 - Pendientes de la persona: la URL pública, el enlace del video, la captura de una traza en LangSmith y la de `/metrics`.
